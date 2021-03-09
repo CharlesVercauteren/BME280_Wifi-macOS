@@ -32,7 +32,7 @@ let SET_HOSTNAME = "41"
 
 let LOG_INTERVAL = "600"
 
-let UPDATE_INTERVAL = 1             // Update view (s)
+let UPDATE_INTERVAL =  2             // Update view (s)
 
 let PORTNUMBER: UInt16 = 2000       //  UDP port number server
 
@@ -53,8 +53,6 @@ class ViewController: NSViewController {
     @IBOutlet weak var infoTxt: NSTextField!
     
     @IBOutlet weak var connectBtn: NSButton!
-    @IBOutlet weak var saveLogBtn: NSButton!
-    @IBOutlet weak var getLogBtn: NSButton!
     @IBOutlet weak var setLogIntervalBtn: NSButton!
     @IBOutlet weak var setHostNameBtn: NSButton!
     @IBOutlet weak var setTimeOnArduinoBtn: NSButton!
@@ -66,8 +64,17 @@ class ViewController: NSViewController {
     let interval = TimeInterval(UPDATE_INTERVAL)     //Seconds
     var logIntervalString = LOG_INTERVAL
     
-    // First command to send to Arduino
-    var commandToSend = GET_HUMIDITY
+    // Buttons for functions pressed ?
+    var getLog = false
+    var setLogInterval = false
+    var setLogIntervalCommand = ""
+    var setTime = false
+    var setTimeCommand = ""
+    var setHostname = false
+    var setHostnameCommand = ""
+    
+    // Command to send (will increment and make GET_HOSTNAME first send)
+    var commandToSend = GET_LOG_INTERVAL
     
     //Arduino UDP server properties
     //IP via interface
@@ -80,11 +87,8 @@ class ViewController: NSViewController {
         super.viewDidLoad()
                 
         // Enable/disable buttons
-        saveLogBtn.isEnabled = false
-        getLogBtn.isEnabled = false
         setLogIntervalBtn.isEnabled = false
         setTimeOnArduinoBtn.isEnabled = false
-        //setHostNameBtn.isEnabled = false
         
         // Init text
         logIntervalTxt.stringValue = logIntervalString
@@ -97,21 +101,6 @@ class ViewController: NSViewController {
         logTable.delegate = self
     }
     
-    @IBAction func intervalSelection(_ sender: NSButton) {
-        switch sender.title {
-        case "10 min":
-            logIntervalString = "600"
-        case "15 min":
-            logIntervalString = "900"
-        case "30 min":
-            logIntervalString = "1800"
-        case "60 min":
-            logIntervalString = "3600"
-        default:
-            print("default")
-        }
-    }
-    
     @IBAction func connectBtn(_ sender: Any) {
         // Disconnect current connection
         timer.invalidate()
@@ -121,6 +110,8 @@ class ViewController: NSViewController {
         infoTxt.stringValue = "Connecting."
         hostNameFromArduinoTxt.stringValue = "------"
         temperatureTxt.stringValue = "--.-- °C"
+        pressureTxt.stringValue = "----,-- hPa"
+        humidityTxt.stringValue = "--,-- %"
         timeFromArduinoTxt.stringValue = "Time: --:--:--"
         logIntervalFromArduinoTxt.stringValue = "Log interval: -- s"
 
@@ -145,24 +136,9 @@ class ViewController: NSViewController {
             // Connection available, start questioning the Arduino
             print("State: Ready.")
             startTimer()
-            saveLogBtn.isEnabled = true
-            getLogBtn.isEnabled = true
             setLogIntervalBtn.isEnabled = true
             setTimeOnArduinoBtn.isEnabled = true
-            //setHostNameBtn.isEnabled = true
-            
-            commandToSend = GET_HOSTNAME
-            sendCommand(server: server!, command: commandToSend)
-            receiveReply(server: server!)
-            
-            commandToSend = GET_TIME
-            sendCommand(server: server!, command: commandToSend)
-            receiveReply(server: server!)
-            
-            commandToSend = GET_LOG_INTERVAL
-            sendCommand(server: server!, command: commandToSend)
-            receiveReply(server: server!)
-            
+            setHostNameBtn.isEnabled = true
         case .failed:
             print("State: Failed.")
         case .cancelled:
@@ -184,29 +160,56 @@ class ViewController: NSViewController {
     
     @objc func timerTic() {
         // Is there still something in receive buffer ?
-        self.receiveReply(server: self.server!)
-        
-        // Get temperature
-        switch commandToSend {
-        case GET_TEMPERATURE:
-            commandToSend = GET_PRESSURE
-        case GET_PRESSURE:
-            commandToSend = GET_HUMIDITY
-        case GET_HUMIDITY:
-            commandToSend = GET_TEMPERATURE
-        default:
-            commandToSend = GET_TEMPERATURE
+        //self.receiveReply(server: self.server!)
+        if setTime {
+            print("Setting time")
+            commandToSend = setTimeCommand
+            setTime = false
         }
-        self.sendCommand(server: self.server!, command: commandToSend)
-        self.receiveReply(server: self.server!)
+        else if getLog {
+            print("Getting log")
+            commandToSend = String(GET_LOG)
+            getLog = false
+        }
+        else if setLogInterval {
+            print("Setting log interval")
+            commandToSend = setLogIntervalCommand
+            setLogInterval = false
+        }
+        else if setHostname {
+            print("Setting hostname")
+            commandToSend = setHostnameCommand
+            setHostname = false
+        }
+        else {
+            // Get temperature
+            switch commandToSend {
+            case GET_HOSTNAME:
+                commandToSend = GET_TEMPERATURE
+            case GET_TEMPERATURE:
+                commandToSend = GET_PRESSURE
+            case GET_PRESSURE:
+                commandToSend = GET_HUMIDITY
+            case GET_HUMIDITY:
+                commandToSend = GET_TIME
+            case GET_TIME:
+                commandToSend = GET_LOG_INTERVAL
+            case GET_LOG_INTERVAL:
+                commandToSend = GET_LOG
+            case GET_LOG:
+                commandToSend = GET_HOSTNAME
+            default:
+                commandToSend = GET_TEMPERATURE
+            }
+        }
+        sendCommand(server: self.server!, command: commandToSend)
     }
-    
-
     
     private func sendCommand(server: NWConnection, command: String) {
         server.send(content: command.data(using: String.Encoding.ascii),
                 completion: .contentProcessed({error in
-                     if let error = error {
+                    self.receiveReply(server: self.server!)
+                    if let error = error {
                         print("error while sending data: \(error).")
                         return
                      }
@@ -226,6 +229,7 @@ class ViewController: NSViewController {
         // Remove the command from te reply (= command + " " + value)
         let firstSpace = reply.firstIndex(of: " ") ?? reply.endIndex
         let result = reply[..<firstSpace]
+        print("Received: \(reply)")
         
         // Evaluate the answer from the Arduino
         infoTxt.stringValue = "Connected."
@@ -239,16 +243,14 @@ class ViewController: NSViewController {
         case GET_TIME, SET_TIME:
             self.timeFromArduinoTxt.stringValue = "Time: " + String(reply.suffix(from: firstSpace))
         case GET_LOG:
+            print(reply)
             let startOfString = reply.index(after: firstSpace)  //Remove space
             logString = String(reply.suffix(from: startOfString))
             log = decodeLog(log: logString)
-            print(log)
             logTable.reloadData()
-
         case GET_LOG_INTERVAL, SET_LOG_INTERVAL:
             logIntervalFromArduinoTxt.stringValue = "Log interval: " + String(reply.suffix(from: firstSpace))
             logTable.reloadData()
-
         case GET_HOSTNAME, SET_HOSTNAME:
             hostNameFromArduinoTxt.stringValue = String(reply.suffix(from: firstSpace))
         case MESSAGE_EMPTY:
@@ -257,7 +259,6 @@ class ViewController: NSViewController {
             print("Unknown command.")
         }
         reply = ""
-
     }
     
     @IBAction func setTimeOnArduinoBtn(_ sender: NSButton) {
@@ -266,163 +267,55 @@ class ViewController: NSViewController {
         let hour = calender.component(.hour, from: date)
         let minute = calender.component(.minute, from: date)
         
-        //Stop timer so we can set the time
-        timer.invalidate()
-        
-        // Send SET_TIME command
-        let setTimeCommand = SET_TIME + String(format: " %02d:%02d",hour,minute)
-        sendCommand(server: server!, command: setTimeCommand)
+        // Next command is set time (see tomerTic() )
+        setTime = true
+        setTimeCommand = SET_TIME + String(format: " %02d:%02d",hour,minute)
 
         // Wait for response
         timeFromArduinoTxt.stringValue = "Time: --:--:--"
-        // Receive response
-        receiveReply(server: server!)
-        
-        // Continue
-        startTimer()
-    }
-    
-    @IBAction func viewLogBtn(_ sender: NSButton) {
-        
-        //Stop timer so we can get the log
-        timer.invalidate()
-        
-        // Send GET_LOG command
-        let setLogCommand = GET_LOG
-        sendCommand(server: server!, command: setLogCommand)
-        receiveReply(server: server!)
-        
-        // Continue
-        startTimer()
+
     }
     
     @IBAction func setLogIntervalBtn(_ sender: Any) {
-        //Stop timer so we can set the log interval
-        timer.invalidate()
-        
+        // Next command is set log interval (see timerTic() )
+        setLogInterval = true
+        setLogIntervalCommand = SET_LOG_INTERVAL + " " + logIntervalTxt.stringValue
+
         // Waiting for response
         logIntervalFromArduinoTxt.stringValue = "Log interval: ---- s"
-        
-        // Send SET_LOG_INTERVAL command
-        let setLogIntervalCommand = SET_LOG_INTERVAL + " " + logIntervalTxt.stringValue
-        sendCommand(server: server!, command: setLogIntervalCommand)
-        receiveReply(server: server!)
-        
-        // Continue
-        startTimer()
     }
     
     @IBAction func setHostnameOnArduino(_ sender: Any) {
-        //Stop timer so we can set the hostname
-        timer.invalidate()
-        
+        //Set hostname as next (see timerTic() )
+        setHostname = true
+        setHostnameCommand = SET_HOSTNAME +  " " + hostNameTxt.stringValue
         // Wait for response
         hostNameFromArduinoTxt.stringValue = "------"
-        
-        // Send SET_HOSTNAME command
-        let setHostnameCommand = SET_HOSTNAME +  " " + hostNameTxt.stringValue
-        sendCommand(server: server!, command: setHostnameCommand)
-        receiveReply(server: self.server!)
-        
-        // Continue
-        startTimer()
     }
     
-    @IBAction func saveLog(_ sender: NSButton) {
-        
-        var fileURL: URL? //(fileURLWithPath: "")
 
-        // Save log to ...
-        let savePanel = NSSavePanel()
-        
-        savePanel.title = "Save log."
-        savePanel.nameFieldStringValue = "temperature.log"
-        
-        switch savePanel.runModal() {
-        case .OK:
-            fileURL = savePanel.url!
-        case .cancel:
-            fileURL = nil
-        default:
-            print("NSOpenPanel: error")
-            exit(0)
-        }
-          
-        if (fileURL != nil) {
-            var str = ""
-            for row in 0..<log.count {
-                str += log[row].time + "\t" + log[row].temperature + "\n"
-            }
-            do {
-                try str.data(using: .ascii)?.write(to: fileURL!)
-            }
-            catch {
-                print("Error writing file")
-            }
-        }
-    }
     
     @IBAction func exitBtn(_ sender: Any) {
         NSApplication.shared.terminate(self)
     }
     
-    /*
-    private func decodeLog(log: String) -> [LogEntry] {
-        var decoded = [LogEntry]()
-        var toDecode = log
-        var index = log.startIndex
-
-        while index != toDecode.endIndex {
-            index = toDecode.firstIndex(of: "\n") ?? toDecode.endIndex
-            if index != toDecode.endIndex {
-                let entry = decodeLogEntry(entry: String(toDecode[...index]))
-                decoded.append(entry)
-                toDecode = String(toDecode[toDecode.index(after: index)...])
-            }
-        }
-        
-        return decoded.reversed()
-    }
-    
-    private func decodeLogEntry(entry: String) -> LogEntry {
-        var remains = ""
-        var temperature = ""
-        var index = entry.firstIndex(of: "\t") ?? entry.endIndex
-        var time = String(entry[..<index])
-        if time == "99:99:99" { time = "--:--:--" }
-        if index != entry.endIndex {
-            index = entry.index(after: index)
-            remains = String(entry[index...])
-            index = remains.firstIndex(of: "\n") ?? entry.endIndex
-            temperature = String(remains[..<index])
-            if time ==  "--:--:--" { temperature = "--.--" }
-
-        }
-        else {
-            temperature = "--.-"
-        }
-        return LogEntry(time: time, temperature: temperature)
-    }*/
-    
     private func decodeLog(log: String) -> [LogEntry] {
         var decoded = [LogEntry]()
         var toDecode = log
         var index = log.startIndex
         
-        print("---decodeLog")
+        //print("---decodeLog")
         print(log)
         while index != toDecode.endIndex {
             index = toDecode.firstIndex(of: "\n") ?? toDecode.endIndex
             if index != toDecode.endIndex {
-                print(String(toDecode[...index]))
+                //print(String(toDecode[...index]))
                 let entry = decodeLogEntry(entry: String(toDecode[...index]))
                 decoded.append(entry)
                 toDecode = String(toDecode[toDecode.index(after: index)...])
             }
-
         }
-        
-        print("+++decodeLog")
+        //print("+++decodeLog")
         return decoded.reversed()
     }
     
@@ -431,7 +324,7 @@ class ViewController: NSViewController {
         var temperature = ""
         var pressure = ""
         var humidity = ""
-        print(entry)
+        //print(entry)
         var index = entry.firstIndex(of: "\t") ?? entry.endIndex
         let time = String(entry[..<index])
         if index != entry.endIndex {
